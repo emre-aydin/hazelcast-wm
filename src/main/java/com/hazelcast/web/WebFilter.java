@@ -242,14 +242,16 @@ public class WebFilter implements Filter {
         }
     }
 
-    protected HazelcastHttpSession createNewSession(HazelcastRequestWrapper requestWrapper, String existingSessionId) {
-        String id = existingSessionId == null ? generateSessionId() : existingSessionId;
+    protected HazelcastHttpSession createNewSession(HazelcastRequestWrapper requestWrapper,
+                                                    String existingHazelcastSessionId) {
+
+        String id = existingHazelcastSessionId == null ? generateSessionId() : existingHazelcastSessionId;
         if (requestWrapper.getOriginalSession(false) != null) {
             LOGGER.finest("Original session exists!!!");
         }
         HttpSession originalSession = requestWrapper.getOriginalSession(true);
         HazelcastHttpSession hazelcastSession = createHazelcastHttpSession(id, originalSession, deferredWrite);
-        if (existingSessionId == null) {
+        if (existingHazelcastSessionId == null) {
             hazelcastSession.setClusterWideNew(true);
             // If the session is being created for the first time, add its initial reference in the cluster-wide map.
         }
@@ -336,20 +338,6 @@ public class WebFilter implements Filter {
         req.res.addCookie(sessionCookie);
     }
 
-    private String getSessionCookie(final HazelcastRequestWrapper req) {
-        final Cookie[] cookies = req.getCookies();
-        if (cookies != null) {
-            for (final Cookie cookie : cookies) {
-                final String name = cookie.getName();
-                final String value = cookie.getValue();
-                if (name.equalsIgnoreCase(sessionCookieName)) {
-                    return value;
-                }
-            }
-        }
-        return null;
-    }
-
     @Override
     public final void doFilter(ServletRequest req, ServletResponse res, final FilterChain chain)
             throws IOException, ServletException {
@@ -387,8 +375,6 @@ public class WebFilter implements Filter {
 
     protected class HazelcastRequestWrapper extends HttpServletRequestWrapper {
         final HttpServletResponse res;
-        HazelcastHttpSession hazelcastSession;
-        String clusteredSessionId;
 
         public HazelcastRequestWrapper(final HttpServletRequest req,
                                        final HttpServletResponse res) {
@@ -432,66 +418,65 @@ public class WebFilter implements Filter {
 
         @Override
         public HazelcastHttpSession getSession(final boolean create) {
-            hazelcastSession = readSessionFromLocal();
-            if (hazelcastSession == null && !res.isCommitted() && (create || clusteredSessionId != null)) {
-                hazelcastSession = createNewSession(HazelcastRequestWrapper.this, clusteredSessionId);
+            String hazelcastSessionId = findHazelcastSessionIdFromRequest();
+            HazelcastHttpSession hazelcastSession = findSessionByHazelcastSessionId(hazelcastSessionId);
+            if (hazelcastSession == null) {
+                hazelcastSession = findSessionByOriginalSessionId();
+            }
+
+            if (hazelcastSession == null && !res.isCommitted() && (create || hazelcastSessionId != null)) {
+                hazelcastSession = createNewSession(HazelcastRequestWrapper.this, hazelcastSessionId);
             }
             return hazelcastSession;
         }
 
-        private HazelcastHttpSession readSessionFromLocal() {
-            String invalidatedOriginalSessionId = null;
-            if (hazelcastSession != null && !hazelcastSession.isValid()) {
-                LOGGER.finest("Session is invalid!");
-                destroySession(hazelcastSession, true);
-                invalidatedOriginalSessionId = hazelcastSession.invalidatedOriginalSessionId;
-                hazelcastSession = null;
-            } else if (hazelcastSession != null) {
-                return hazelcastSession;
-            }
+        private HazelcastHttpSession findSessionByOriginalSessionId() {
             HttpSession originalSession = getOriginalSession(false);
-            if (originalSession != null) {
-                String hazelcastSessionId = originalSessions.get(originalSession.getId());
-                if (hazelcastSessionId != null) {
-                    hazelcastSession = sessions.get(hazelcastSessionId);
+            if (originalSession != null && originalSessions.containsKey(originalSession.getId())) {
+                HazelcastHttpSession hzSession = sessions.get(originalSessions.get(originalSession.getId()));
 
-                    if (hazelcastSession != null && !hazelcastSession.isStickySession()) {
-                        hazelcastSession.updateReloadFlag();
-                    }
-                    return hazelcastSession;
+                if (hzSession != null && !hzSession.isStickySession()) {
+                    hzSession.updateReloadFlag();
                 }
-                // Even though session can be taken from request, it might be already invalidated.
-                // For example, in Wildfly (uses Undertow), taken wrapper session might be valid
-                // but its underlying real session might be already invalidated after redirection
-                // due to its request/url based wrapper session (points to same original session) design.
-                // Therefore, we check the taken session id and
-                // ignore its invalidation if it is already invalidated inside Hazelcast's session.
-                // See issue on Wildfly https://github.com/hazelcast/hazelcast/issues/6335
-                if (!originalSession.getId().equals(invalidatedOriginalSessionId)) {
-                    originalSession.invalidate();
-                }
+
+                return hzSession;
+            } else {
+                return null;
             }
-            if (clusteredSessionId != null) {
-                hazelcastSession = sessions.get(clusteredSessionId);
-            }
-            return readFromCookie();
         }
 
-        private HazelcastHttpSession readFromCookie() {
-            if (clusteredSessionId == null) {
-                clusteredSessionId = getSessionCookie(this);
-                if (clusteredSessionId == null) {
-                    clusteredSessionId = getParameter(HAZELCAST_SESSION_COOKIE_NAME);
+        private HazelcastHttpSession findSessionByHazelcastSessionId(String hazelcastSessionId) {
+            if (hazelcastSessionId == null) {
+                return null;
+            }
+
+            HazelcastHttpSession hzSession = getSessionWithId(hazelcastSessionId);
+            if (hzSession != null && !hzSession.isStickySession()) {
+                hzSession.updateReloadFlag();
+            }
+            return hzSession;
+        }
+
+        private String findHazelcastSessionIdFromRequest() {
+            String hzSessionId = null;
+
+            final Cookie[] cookies = getCookies();
+            if (cookies != null) {
+                for (final Cookie cookie : cookies) {
+                    final String name = cookie.getName();
+                    final String value = cookie.getValue();
+                    if (name.equalsIgnoreCase(sessionCookieName)) {
+                        hzSessionId = value;
+                        break;
+                    }
                 }
             }
-            if (clusteredSessionId != null) {
-                hazelcastSession = getSessionWithId(clusteredSessionId);
-                if (hazelcastSession != null && !hazelcastSession.isStickySession()) {
-                    hazelcastSession.updateReloadFlag();
-                    return hazelcastSession;
-                }
+            // if hazelcast session id is not found on the cookie, look into request parameters
+            if (hzSessionId == null) {
+                hzSessionId = getParameter(HAZELCAST_SESSION_COOKIE_NAME);
             }
-            return null;
+
+            return hzSessionId;
         }
 
     }

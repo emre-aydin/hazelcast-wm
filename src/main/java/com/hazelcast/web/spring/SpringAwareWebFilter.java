@@ -53,8 +53,8 @@ public class SpringAwareWebFilter extends WebFilter {
 
     @Override
     protected HazelcastHttpSession createNewSession(HazelcastRequestWrapper requestWrapper,
-                                                    String existingSessionId) {
-        HazelcastHttpSession session = super.createNewSession(requestWrapper, existingSessionId);
+                                                    String existingHazelcastSessionId) {
+        HazelcastHttpSession session = super.createNewSession(requestWrapper, existingHazelcastSessionId);
         ApplicationContext appContext =
                 WebApplicationContextUtils.getWebApplicationContext(servletContext);
         if (appContext != null) {
