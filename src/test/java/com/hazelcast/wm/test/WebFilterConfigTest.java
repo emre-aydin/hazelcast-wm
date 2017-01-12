@@ -10,7 +10,6 @@ import org.junit.rules.ExpectedException;
 import javax.servlet.FilterConfig;
 import java.util.Properties;
 
-import static org.hamcrest.CoreMatchers.allOf;
 import static org.hamcrest.CoreMatchers.containsString;
 
 public class WebFilterConfigTest {
@@ -22,8 +21,8 @@ public class WebFilterConfigTest {
     @Test
     public void testInstanceName_withConfigLocation() throws Exception {
         expectedException.expect(InvalidConfigurationException.class);
-        expectedException.expectMessage(
-                allOf(containsString("session-ttl-seconds"), containsString("config-location")));
+        expectedException.expectMessage("session-ttl-seconds");
+        expectedException.expectMessage("config-location");
 
         Properties properties = new Properties();
         properties.setProperty("instance-name", "instance-1");
